@@ -1,104 +1,105 @@
-import re
+import sys
+import os
 from PIL import Image, ImageDraw
 
-def render_gcode(input_file, output_file, image_width=800, image_height=600, margin=20):
-    # 1. Wczytanie i parsowanie G-code
-    try:
-        with open(input_file, 'r') as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        print(f"Błąd: Nie znaleziono pliku {input_file}")
+def gcode_to_image(input_file, output_file="output.png", width=900, height=400):
+    """
+    Parses a G-code file and renders it to a PNG image.
+    """
+    
+    # 1. Read the G-code file
+    if not os.path.exists(input_file):
+        print(f"Error: File '{input_file}' not found.")
         return
 
-    # Zmienne stanu
+    with open(input_file, 'r') as f:
+        lines = f.readlines()
+
+    # 2. Setup the Canvas
+    im = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(im)
+
+    # 3. Parser State
     pen_down = False
-    current_x, current_y = 0.0, 0.0
+    current_x = 0.0
+    current_y = 0.0
     
-    # Lista odcinków do narysowania: [(x1, y1, x2, y2), ...]
-    segments = []
-    
-    # Zmienne do obliczenia skali (min/max)
-    min_x, max_x = float('inf'), float('-inf')
-    min_y, max_y = float('inf'), float('-inf')
+   
+    color_map = {
+        'C0': 'black',
+        'C1': 'red',
+        'C2': 'blue',
+        'C3': 'green'
+    }
+    current_color = 'black'
 
-    # Regex do wyciągania liczb po X i Y
-    coord_pattern = re.compile(r'([XY])(-?\d*\.?\d+)')
-
-    print("Analiza G-code...")
     
+    scale_x = width / 150.0  
+    scale_y = height / 40.0
+
+    print(f"Rendering {input_file}...")
+
     for line in lines:
         line = line.strip().upper()
+        if not line: continue
+
         
-        # Obsługa stanu pisaka
-        if 'M3' in line:
+        if line in color_map:
+            current_color = color_map[line]
+        
+        
+        elif line == "M3":
             pen_down = True
-        elif 'M5' in line:
+        elif line == "M5":
             pen_down = False
-        
-        # Sprawdzamy czy linia zawiera ruch (G0 lub G1)
-        if 'G0' in line or 'G1' in line:
-            # Szukamy X i Y w linii
-            found_coords = dict(re.findall(r'([XY])(-?\d*\.?\d+)', line))
             
-            new_x = float(found_coords['X']) if 'X' in found_coords else current_x
-            new_y = float(found_coords['Y']) if 'Y' in found_coords else current_y
+        # --- Handle Movement ---
+        elif line.startswith("G01") or line.startswith("G1"):
+            # Parse target coordinates
+            parts = line.split()
+            target_x = current_x
+            target_y = current_y
             
-            # Jeśli pisak jest w dole, zapisujemy odcinek
+            for part in parts:
+                if part.startswith('X'):
+                    target_x = float(part[1:])
+                if part.startswith('Y'):
+                    target_y = float(part[1:])
+            
+            # If the pen is down, draw a line from old pos to new pos
             if pen_down:
-                segments.append((current_x, current_y, new_x, new_y))
-                
-                # Aktualizacja zakresów do skalowania
-                min_x, max_x = min(min_x, current_x, new_x), max(max_x, current_x, new_x)
-                min_y, max_y = min(min_y, current_y, new_y), max(max_y, current_y, new_y)
             
-            # Aktualizacja pozycji głowicy (nawet jak pisak w górze)
-            current_x, current_y = new_x, new_y
+                
+                # Start point
+                start_px_x = width - (current_x * scale_x)
+                start_px_y = current_y * scale_y
+                
+                # End point
+                end_px_x = width - (target_x * scale_x)
+                end_px_y = target_y * scale_y
 
-    if not segments:
-        print("Nie znaleziono żadnych ruchów rysujących (z opuszczonym pisakiem M3)!")
-        return
+                draw.line(
+                    [(start_px_x, start_px_y), (end_px_x, end_px_y)], 
+                    fill=current_color, 
+                    width=3
+                )
 
-    print(f"Znaleziono {len(segments)} odcinków.")
-    print(f"Obszar roboczy: X[{min_x:.2f}, {max_x:.2f}] Y[{min_y:.2f}, {max_y:.2f}]")
+            # Update position
+            current_x = target_x
+            current_y = target_y
 
-    # 2. Obliczanie skali, aby zmieścić rysunek w oknie
-    data_width = max_x - min_x
-    data_height = max_y - min_y
-    
-    # Zabezpieczenie przed dzieleniem przez zero (gdy rysunek to kropka lub linia prosta)
-    if data_width == 0: data_width = 1
-    if data_height == 0: data_height = 1
+    # 5. Save output
+    im.save(output_file)
+    print(f"Done! Image saved to {output_file}")
 
-    scale_x = (image_width - 2 * margin) / data_width
-    scale_y = (image_height - 2 * margin) / data_height
-    scale = min(scale_x, scale_y) # Zachowaj proporcje (aspect ratio)
+if __name__ == "__main__":
+    #
+    if len(sys.argv) < 2:
+        print("Usage: python gcode_to_png.py <gcode_file> [output_file]")
+        print("Example: python gcode_to_png.py drawing1.gcode")
+    else:
+        gcode_path = sys.argv[1]
+        out_path = sys.argv[2] if len(sys.argv) > 2 else "output.png"
+        gcode_to_image(gcode_path, out_path)
 
-    # Funkcja pomocnicza do transformacji współrzędnych
-    def transform(x, y):
-        # Przesuwamy do 0,0 (odejmując min)
-        # Skalujemy
-        # Dodajemy margines
-        tx = (x - min_x) * scale + margin
-        
-        # Dla Y musimy odwrócić oś (bo w obrazkach 0 jest na górze, a w CNC na dole)
-        # Obliczamy wysokość rysunku w pikselach i odejmujemy od dołu obrazka
-        ty = image_height - margin - ((y - min_y) * scale)
-        return tx, ty
-
-    # 3. Rysowanie
-    img = Image.new('RGB', (image_width, image_height), 'white')
-    draw = ImageDraw.Draw(img)
-
-    for x1, y1, x2, y2 in segments:
-        px1, py1 = transform(x1, y1)
-        px2, py2 = transform(x2, y2)
-        # Rysujemy czarną linię o grubości 2px
-        draw.line((px1, py1, px2, py2), fill='black', width=2)
-
-    # 4. Zapis
-    img.save(output_file)
-    print(f"Sukces! Obraz zapisano jako: {output_file}")
-
-# --- Użycie ---
-# Podmień 'drawing.gcode' na nazwę swojego pliku, jeśli jest inna
-render_gcode('drawing.gcode', 'wyjscie.png')
+#python cos.py drawing1.gcode
